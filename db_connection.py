@@ -18,6 +18,7 @@ def get_connection():
             f"TrustServerCertificate={TRUST_SERVER_CERTIFICATE};"
             f"Pooling=yes;"
             f"Max Pool Size=10;"
+            f"APP=DVMsMonitor;"
         )
         conn = pyodbc.connect(connection_str, timeout=SQL_COMMAND_TIMEOUT)
         return conn
