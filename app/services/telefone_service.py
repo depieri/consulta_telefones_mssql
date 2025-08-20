@@ -1,33 +1,103 @@
 from db_connection import get_connection
+from config import MAX_RETRIES, BACKOFF_INITIAL    # usa a fonte única do config.py
 import pyodbc
+import time               # conteúdo: sleep do back-off
+import logging            # conteúdo: logs estruturados
+
+def prepare_session(cursor):
+    """
+    Aplica políticas de sessão para esta conexão.
+    cursor: pyodbc.Cursor -> objeto de cursor ativo (retorno: None; efeito na sessão).
+    """
+    cursor.execute("SET QUERY_GOVERNOR_COST_LIMIT 20;")  # limite de custo estimado (~segundos)
+    cursor.execute("SET LOCK_TIMEOUT 5000;")             # até 5s aguardando locks
+
+def _is_transient_lock_error(err_msg: str) -> bool:
+    """
+    Verifica se a mensagem de erro indica deadlock (1205) ou lock timeout (1222),
+    ou códigos/termos equivalentes nas mensagens do driver.
+    Retorno: bool
+    """
+    msg = err_msg.lower()
+    return (
+        "1205" in msg                       # deadlock
+        or "1222" in msg                    # lock request timeout
+        or "deadlock" in msg                # palavra-chave
+        or "sqlstate=40001" in msg          # serialize/deadlock dependendo do driver
+        or "hyt00" in msg                   # timeout no ODBC
+    )
+
+
+def execute_with_retries(cursor, query: str, params: tuple):
+    """
+    Executa a query com retry e back-off exponencial para erros transitórios de lock/deadlock.
+    Retorno: list[pyodbc.Row] (resultado do fetchall)
+    """
+    attempt = 0                              # conteúdo: contador de tentativas (int)
+    while True:                              # efeito: laço até sucesso ou esgotar retries
+        try:
+            cursor.execute(query, params)    # retorno: None (result set no cursor)
+            rows = cursor.fetchall()         # retorno: list[pyodbc.Row]
+            return rows                      # retorno: lista de linhas
+        except pyodbc.Error as e:            # captura qualquer erro do ODBC
+            err = str(e)
+            if _is_transient_lock_error(err) and attempt < MAX_RETRIES:
+                delay = BACKOFF_INITIAL * (2 ** attempt)  # conteúdo: atraso em segundos (float)
+                logging.warning(
+                    f"Lock/Deadlock/Timeout detectado. Tentativa {attempt+1}/{MAX_RETRIES}. "
+                    f"Aguardando {delay:.2f}s. Erro: {err}"
+                )
+                time.sleep(delay)            # efeito: aguarda antes de tentar novamente
+                attempt += 1                 # efeito: incrementa tentativa
+                continue                     # efeito: tenta de novo
+            # não é erro transitório OU esgotaram as tentativas
+            logging.error(f"Erro definitivo ao executar query: {err}")
+            raise
+
 
 QUERY = """
-SELECT 
-    t.DDD, t.TELEFONE
-FROM CONTATOS c
-JOIN HISTORICO_ENDERECOS e ON c.CONTATOS_ID = e.CONTATOS_ID
-JOIN HISTORICO_TELEFONES t ON c.CONTATOS_ID = t.CONTATOS_ID
-WHERE 
-    CONVERT(DATE, c.NASC) = ?
-    AND e.CIDADE = ?
-    AND e.UF = ?
-    AND t.TIPO_TELEFONE = 3
+    SELECT 
+        t.DDD,
+        t.TELEFONE
+    FROM [dbo].[CONTATOS]            AS c
+    JOIN [dbo].[HISTORICO_ENDERECOS] AS e ON e.CONTATOS_ID = c.CONTATOS_ID
+    JOIN [dbo].[HISTORICO_TELEFONES] AS t ON t.CONTATOS_ID = c.CONTATOS_ID
+    WHERE
+        c.NASC >= ? AND c.NASC < DATEADD(DAY, 1, ?)
+        AND e.CIDADE = ?
+        AND e.UF = ?
+        AND t.TIPO_TELEFONE = 3;
 """
 
-def consultar_telefones(data_nasc, cidade, uf):
-    conn = get_connection()
+def consultar_telefones_cursor(cursor, data_nasc: str, cidade: str, uf: str):
+    """
+    Executa a consulta usando um cursor já preparado pela sessão.
+    Parâmetros:
+      cursor: pyodbc.Cursor -> cursor ativo da conexão reutilizada (retorno: list[str])
+      data_nasc: str (AAAA-MM-DD) -> limiar inferior (>=) e superior aberto (< +1 dia)
+      cidade: str -> município (normalizado na planilha)
+      uf: str -> UF (normalizado na planilha)
+    Retorno:
+      list[str] -> cada item no formato '55' + DDD + TELEFONE (ex.: '5511999998888')
+    """
+    # Executa a query com parâmetros (data_nasc é usada duas vezes)
+    rows = execute_with_retries(cursor, QUERY, (data_nasc, data_nasc, cidade, uf))  # retorno: list[Row]
+    return [f"55{r.DDD}{r.TELEFONE}" for r in rows]                                  # retorno: list[str]
+
+
+
+def consultar_telefones(data_nasc: str, cidade: str, uf: str):
+    """
+    Wrapper de compatibilidade: abre conexão/cursor, prepara sessão, executa e fecha.
+    Útil para chamadas isoladas; no fluxo de produção, prefira consultar_telefones_cursor().
+    """
+    conn = get_connection()                                     # retorno: pyodbc.Connection
     if conn is None:
-        raise Exception("Erro de conexão")
+        raise Exception("Não foi possível abrir conexão com o MSSQL.")
 
     try:
-        cursor = conn.cursor()
-        cursor.execute("SET LOCK_TIMEOUT 5000")
-        cursor.execute(QUERY, data_nasc, cidade, uf)
-        resultados = cursor.fetchall()
-        return [f"55{r.DDD}{r.TELEFONE}" for r in resultados]
-    except pyodbc.OperationalError as e:
-        if "1205" in str(e):  # deadlock
-            print("Deadlock detectado. Retentando...")
-        raise
+        cursor = conn.cursor()                                  # retorno: pyodbc.Cursor
+        prepare_session(cursor)                                 # efeito: configura sessão; retorno: None
+        return consultar_telefones_cursor(cursor, data_nasc, cidade, uf)
     finally:
-        conn.close()
+        conn.close()  
