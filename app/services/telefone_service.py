@@ -9,6 +9,9 @@ def prepare_session(cursor):
     Aplica políticas de sessão para esta conexão.
     cursor: pyodbc.Cursor -> objeto de cursor ativo (retorno: None; efeito na sessão).
     """
+    cursor.execute("SET NOCOUNT ON;")                    # reduz chatter TDS (menos overhead de 'N rows affected')
+    cursor.execute("SET DEADLOCK_PRIORITY LOW;")         # em disputa, você vira vítima (melhor do que travar outros)
+    cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;")  # padrão; explícito ajuda auditoria
     cursor.execute("SET QUERY_GOVERNOR_COST_LIMIT 20;")  # limite de custo estimado (~segundos)
     cursor.execute("SET LOCK_TIMEOUT 5000;")             # até 5s aguardando locks
 
