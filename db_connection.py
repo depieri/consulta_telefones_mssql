@@ -1,5 +1,6 @@
 import pyodbc
-from config import DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT, ENCRYPT, TRUST_SERVER_CERTIFICATE
+from config import (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT, 
+                    ENCRYPT, TRUST_SERVER_CERTIFICATE, SQL_COMMAND_TIMEOUT)
 
 def get_connection():
     """
@@ -15,8 +16,10 @@ def get_connection():
             f"PWD={DB_PASSWORD};"
             f"Encrypt={ENCRYPT};"
             f"TrustServerCertificate={TRUST_SERVER_CERTIFICATE};"
+            f"Pooling=yes;"
+            f"Max Pool Size=10;"
         )
-        conn = pyodbc.connect(connection_str)
+        conn = pyodbc.connect(connection_str, timeout=SQL_COMMAND_TIMEOUT)
         return conn
     except pyodbc.Error as e:
         print(f"Erro ao conectar ao banco de dados: {e}")
