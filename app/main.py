@@ -1,13 +1,13 @@
 import logging
+import time
 import os
 import sys
 from datetime import datetime, date
 from app.utils.csv_handler import ler_csv_em_lotes, salvar_csv_resultados
-from app.services.telefone_service import prepare_session, consultar_telefones_cursor
+from app.services.telefone_service import prepare_session, consultar_telefones_em_lote_cursor
 from db_connection import get_connection
 from tqdm import tqdm
-import time, random
-from config import BASE, JITTER, SQL_QUERY_TIMEOUT
+from config import SQL_QUERY_TIMEOUT
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -27,25 +27,38 @@ def main():
     saida = f"output/{prefixo}_telefones_{timestamp}.csv"
 
     logging.info("Iniciando processamento...")
-    for chunk in tqdm(ler_csv_em_lotes(entrada)):
+    for chunk_idx, chunk in enumerate(
+            tqdm(ler_csv_em_lotes(entrada)), # retorno: iterador de DataFrames
+            start=1                                            # retorno: chunk_idx começa em 1
+        ):
+        t0 = time.time()                                       # retorno: float (t0)
         conn = get_connection()                                # retorno: pyodbc.Connection (1 por chunk)
         if conn is None:
             logging.error("Falha ao obter conexão para o chunk; interrompendo.")
             break
         
+        linhas = 0                                             # conteúdo: int; garante valor mesmo em exceção
         try:
             cursor = conn.cursor()                             # retorno: pyodbc.Cursor
             cursor.timeout = SQL_QUERY_TIMEOUT                 # efeito: limite por SELECT (s)
             prepare_session(cursor)                            # aplica SETs uma única vez; retorno: None
     
+            # Prepara os registros do chunk (data_nasc: date, cidade: str, uf: str)
+            registros = []
             for _, row in chunk.iterrows():
                 try:
-                    # data_nasc=row[0], cidade=row[1], uf=row[3] (já normalizados na planilha)
-                    data_nasc = date.fromisoformat(row[0])   # conteúdo: datetime.date (YYYY-MM-DD) -> alinha com tipo do índice
-                    telefones = consultar_telefones_cursor(cursor, data_nasc , row[1], row[3])  # 
-                    salvar_csv_resultados(telefones, saida)                                 # efeito: grava linhas no CSV
+                    registros.append((                          # retorno: None (append na lista)
+                        date.fromisoformat(row[0]),             # conteúdo: datetime.date (YYYY-MM-DD)
+                        row[1],                                 # conteúdo: str (cidade)
+                        row[3]                                  # conteúdo: str (uf)
+                    ))
                 except Exception as e:
-                    logging.error(f"Erro linha {row.to_dict()}: {e}")
+                    logging.error(f"Erro ao preparar linha {row.to_dict()}: {e}")
+
+            if registros:                                      # evita SELECT se o chunk vier vazio
+                telefones = consultar_telefones_em_lote_cursor(cursor, registros)  # retorno: list[str]
+                salvar_csv_resultados(telefones, saida)        # efeito: grava 1 telefone por linha, sem header
+                linhas = len(registros)                        # conteúdo: int (linhas processadas neste chunk)
     
         finally:
             try:
@@ -54,9 +67,11 @@ def main():
                 pass
             conn.close()                                       # encerra conexão do chunk
 
-        # descanso entre chunks: base + jitter aleatório
-        time.sleep(BASE + random.random() * JITTER)                     # efeito: pausa pequena, evita picos
-
+        elapsed = time.time() - t0
+        logging.info(
+            f"Chunk {chunk_idx} concluído: {linhas} linhas, {elapsed:.2f}s "
+            f"({(linhas/elapsed) if elapsed > 0 else 0:.1f} lin/s)"
+        )
 
 if __name__ == "__main__":
     main()

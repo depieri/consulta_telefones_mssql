@@ -13,7 +13,8 @@ DB_PORT = os.environ.get("DB_PORT")       # porta padrão do MSSQL
 ENCRYPT= os.environ.get("ENCRYPT")
 TRUST_SERVER_CERTIFICATE = os.environ.get("TRUST_SERVER_CERTIFICATE")
 SQL_LOGIN_TIMEOUT = int(os.environ.get("SQL_LOGIN_TIMEOUT", 5)) # conteúdo: int (timeout para conectar)
-SQL_QUERY_TIMEOUT   = int(os.environ.get("SQL_QUERY_TIMEOUT", 10)) # conteúdo: int (timeout por SELECT)
+SQL_QUERY_TIMEOUT   = int(os.environ.get("SQL_QUERY_TIMEOUT", 60)) # conteúdo: int (timeout por SELECT)
+SQL_BATCH_SIZE = int(os.environ.get("SQL_BATCH_SIZE", 500))  # conteúdo: int (linhas por chunk)
 # Novas configurações globais de retry/backoff:
 MAX_RETRIES = int(os.environ.get("SQL_MAX_RETRIES", 5))                 # conteúdo: int (nº máx. de tentativas)
 BACKOFF_INITIAL = float(os.environ.get("SQL_BACKOFF_INITIAL", 0.2))     # conteúdo: float (segundos de atraso inicial)

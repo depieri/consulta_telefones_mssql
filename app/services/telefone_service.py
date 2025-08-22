@@ -104,3 +104,48 @@ def consultar_telefones(data_nasc: str, cidade: str, uf: str):
         return consultar_telefones_cursor(cursor, data_nasc, cidade, uf)
     finally:
         conn.close()  
+
+def consultar_telefones_em_lote_cursor(cursor, registros):
+    """
+    Executa consulta set-based para um chunk.
+    Parâmetros:
+      cursor: pyodbc.Cursor (sessão já preparada)
+      registros: list[tuple[date, str, str]] -> [(data_nasc, cidade, uf), ...]
+    Retorno:
+      list[str] -> '55' + DDD + TELEFONE
+    """
+    # 1) cria a temp table com tipos alinhados aos das tabelas
+    cursor.execute("""
+        IF OBJECT_ID('tempdb..#temp_csv') IS NOT NULL DROP TABLE #temp_csv;
+        CREATE TABLE #temp_csv (
+            data_nasc DATE        NOT NULL,
+            cidade    VARCHAR(40) NOT NULL,
+            uf        VARCHAR(2)  NOT NULL
+        );
+    """)
+
+    # 2) Insere o lote na #temp_csv (rápido)
+    cursor.fast_executemany = True
+    cursor.executemany(
+        "INSERT INTO #temp_csv (data_nasc, cidade, uf) VALUES (?, ?, ?)",
+        registros
+    )
+
+    # 3) SELECT set-based (SARGable na data; tipos idênticos nos joins)
+    rows = execute_with_retries(cursor, """
+        SELECT t.DDD, t.TELEFONE
+        FROM #temp_csv AS csv
+        JOIN [dbo].[CONTATOS]            AS c
+          ON c.NASC >= csv.data_nasc
+         AND c.NASC < DATEADD(DAY, 1, csv.data_nasc)
+        JOIN [dbo].[HISTORICO_ENDERECOS] AS e
+          ON e.CONTATOS_ID = c.CONTATOS_ID
+         AND e.CIDADE      = csv.cidade
+         AND e.UF          = csv.uf
+        JOIN [dbo].[HISTORICO_TELEFONES] AS t
+          ON t.CONTATOS_ID = c.CONTATOS_ID
+        WHERE t.TIPO_TELEFONE = 3;
+    """, ())
+
+    # 4) Formata saída
+    return [f"55{r.DDD}{r.TELEFONE}" for r in rows]
