@@ -16,7 +16,7 @@ def get_connection():
             f"PWD={DB_PASSWORD};"
             f"Encrypt={ENCRYPT};"
             f"TrustServerCertificate={TRUST_SERVER_CERTIFICATE};"
-            f"Pooling=yeconn = pyodbc.connect(connection_str, timeout=SQL_LOGIN_TIMEOUT)s;"
+            f"Pooling=yes;"
             f"Max Pool Size=10;"
             f"APP=DVMsMonitor;"
         )

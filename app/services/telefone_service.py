@@ -136,23 +136,27 @@ def consultar_telefones_em_lote_cursor(cursor, registros):
                 data_nasc DATE NOT NULL,
                 cidade VARCHAR(40) NOT NULL,
                 uf VARCHAR(2) NOT NULL
-            );
+            );""", (), is_query=False)
+
+        # 2) CRIA UM ÍNDICE NA TEMP TABLE PARA ACELERAR O JOIN
+        execute_with_retries(cursor, """
+            CREATE CLUSTERED INDEX IX_temp_csv ON #temp_csv (uf, cidade, data_nasc);
         """, (), is_query=False)
         
-        # 2) Inserção com retry
+        # 3) Inserção com retry (usando fast_executemany)
         cursor.fast_executemany = True
         executemany_with_retries(cursor,
             "INSERT INTO #temp_csv (data_nasc, cidade, uf) VALUES (?, ?, ?)",
             registros
         )
         
-        # 3) Consulta principal
+        # 4) Consulta principal com NOLOCK para evitar travamentos
         rows = execute_with_retries(cursor, """
             SELECT DISTINCT t.DDD, t.TELEFONE
             FROM #temp_csv AS csv
-            JOIN [dbo].[CONTATOS] AS c ON c.NASC >= csv.data_nasc AND c.NASC < DATEADD(DAY, 1, csv.data_nasc)
-            JOIN [dbo].[HISTORICO_ENDERECOS] AS e ON e.CONTATOS_ID = c.CONTATOS_ID AND e.CIDADE = csv.cidade AND e.UF = csv.uf
-            JOIN [dbo].[HISTORICO_TELEFONES] AS t ON t.CONTATOS_ID = c.CONTATOS_ID
+            JOIN [dbo].[CONTATOS] AS c WITH (NOLOCK) ON c.NASC >= csv.data_nasc AND c.NASC < DATEADD(DAY, 1, csv.data_nasc)
+            JOIN [dbo].[HISTORICO_ENDERECOS] AS e WITH (NOLOCK) ON e.CONTATOS_ID = c.CONTATOS_ID AND e.CIDADE = csv.cidade AND e.UF = csv.uf
+            JOIN [dbo].[HISTORICO_TELEFONES] AS t WITH (NOLOCK) ON t.CONTATOS_ID = c.CONTATOS_ID
             WHERE t.TIPO_TELEFONE = 3;
         """, ())
         
