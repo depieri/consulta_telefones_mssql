@@ -1,6 +1,6 @@
 import pyodbc
 from config import (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT, 
-                    ENCRYPT, TRUST_SERVER_CERTIFICATE, SQL_LOGIN_TIMEOUT)
+                    ENCRYPT, TRUST_SERVER_CERTIFICATE, ODBC_DRIVER, SQL_LOGIN_TIMEOUT, SQL_AUTOCOMMIT)
 
 def get_connection():
     """
@@ -9,19 +9,24 @@ def get_connection():
     # Monta a string de conexão para o pyodbc
     try:
         connection_str = (
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"DRIVER={{{ODBC_DRIVER}}};"  # usa o driver do .env (18)
             f"SERVER={DB_HOST},{DB_PORT};"
             f"DATABASE={DB_NAME};"
             f"UID={DB_USER};"
             f"PWD={DB_PASSWORD};"
             f"Encrypt={ENCRYPT};"
             f"TrustServerCertificate={TRUST_SERVER_CERTIFICATE};"
-            f"Pooling=yes;"
+            f"Pooling=yeconn = pyodbc.connect(connection_str, timeout=SQL_LOGIN_TIMEOUT)s;"
             f"Max Pool Size=10;"
             f"APP=DVMsMonitor;"
         )
-        conn = pyodbc.connect(connection_str, timeout=SQL_LOGIN_TIMEOUT)
+        conn = pyodbc.connect(connection_str, timeout=SQL_LOGIN_TIMEOUT) # timeout de CONEXÃO (login)
+        try:
+            conn.autocommit = SQL_AUTOCOMMIT   # cada comando se confirma (bom com #temp_csv e fast_executemany)
+        except Exception:
+            pass
         return conn
+    
     except pyodbc.Error as e:
         print(f"Erro ao conectar ao banco de dados: {e}")
         return None  

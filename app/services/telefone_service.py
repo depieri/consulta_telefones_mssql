@@ -4,6 +4,20 @@ import pyodbc
 import time               # conteúdo: sleep do back-off
 import logging            # conteúdo: logs estruturados
 
+QUERY = """
+    SELECT 
+        t.DDD,
+        t.TELEFONE
+    FROM [dbo].[CONTATOS]            AS c
+    JOIN [dbo].[HISTORICO_ENDERECOS] AS e ON e.CONTATOS_ID = c.CONTATOS_ID
+    JOIN [dbo].[HISTORICO_TELEFONES] AS t ON t.CONTATOS_ID = c.CONTATOS_ID
+    WHERE
+        c.NASC >= ? AND c.NASC < DATEADD(DAY, 1, ?)
+        AND e.CIDADE = ?
+        AND e.UF = ?
+        AND t.TIPO_TELEFONE = 3;
+"""
+
 def prepare_session(cursor):
     """
     Aplica políticas de sessão para esta conexão.
@@ -31,17 +45,21 @@ def _is_transient_lock_error(err_msg: str) -> bool:
     )
 
 
-def execute_with_retries(cursor, query: str, params: tuple):
+def execute_with_retries(cursor, query: str, params: tuple = (), is_query: bool = True):
     """
-    Executa a query com retry e back-off exponencial para erros transitórios de lock/deadlock.
-    Retorno: list[pyodbc.Row] (resultado do fetchall)
+    Executa a query (ou DDL/DML) com retry/backoff para erros transitórios.
+    - is_query=True: faz fetchall() e retorna list[Row]
+    - is_query=False: apenas executa e retorna None
     """
     attempt = 0                              # conteúdo: contador de tentativas (int)
     while True:                              # efeito: laço até sucesso ou esgotar retries
         try:
             cursor.execute(query, params)    # retorno: None (result set no cursor)
-            rows = cursor.fetchall()         # retorno: list[pyodbc.Row]
-            return rows                      # retorno: lista de linhas
+            if is_query:
+                rows = cursor.fetchall()         # retorno: list[pyodbc.Row]
+                return rows                      # retorno: lista de linhas
+            return None
+        
         except pyodbc.Error as e:            # captura qualquer erro do ODBC
             err = str(e)
             if _is_transient_lock_error(err) and attempt < MAX_RETRIES:
@@ -57,20 +75,21 @@ def execute_with_retries(cursor, query: str, params: tuple):
             logging.error(f"Erro definitivo ao executar query: {err}")
             raise
 
-
-QUERY = """
-    SELECT 
-        t.DDD,
-        t.TELEFONE
-    FROM [dbo].[CONTATOS]            AS c
-    JOIN [dbo].[HISTORICO_ENDERECOS] AS e ON e.CONTATOS_ID = c.CONTATOS_ID
-    JOIN [dbo].[HISTORICO_TELEFONES] AS t ON t.CONTATOS_ID = c.CONTATOS_ID
-    WHERE
-        c.NASC >= ? AND c.NASC < DATEADD(DAY, 1, ?)
-        AND e.CIDADE = ?
-        AND e.UF = ?
-        AND t.TIPO_TELEFONE = 3;
-"""
+def executemany_with_retries(cursor, query, params_list):
+    attempt = 0
+    while True:
+        try:
+            cursor.executemany(query, params_list)
+            return
+        except pyodbc.Error as e:
+            err = str(e)
+            if _is_transient_lock_error(err) and attempt < MAX_RETRIES:
+                delay = BACKOFF_INITIAL * (2 ** attempt)
+                logging.warning(f"Retrying executemany... Tentativa {attempt+1}/{MAX_RETRIES}")
+                time.sleep(delay)
+                attempt += 1
+            else:
+                raise
 
 def consultar_telefones_cursor(cursor, data_nasc: str, cidade: str, uf: str):
     """
@@ -106,46 +125,47 @@ def consultar_telefones(data_nasc: str, cidade: str, uf: str):
         conn.close()  
 
 def consultar_telefones_em_lote_cursor(cursor, registros):
-    """
-    Executa consulta set-based para um chunk.
-    Parâmetros:
-      cursor: pyodbc.Cursor (sessão já preparada)
-      registros: list[tuple[date, str, str]] -> [(data_nasc, cidade, uf), ...]
-    Retorno:
-      list[str] -> '55' + DDD + TELEFONE
-    """
-    # 1) cria a temp table com tipos alinhados aos das tabelas
-    cursor.execute("""
-        IF OBJECT_ID('tempdb..#temp_csv') IS NOT NULL DROP TABLE #temp_csv;
-        CREATE TABLE #temp_csv (
-            data_nasc DATE        NOT NULL,
-            cidade    VARCHAR(40) NOT NULL,
-            uf        VARCHAR(2)  NOT NULL
-        );
-    """)
-
-    # 2) Insere o lote na #temp_csv (rápido)
-    cursor.fast_executemany = True
-    cursor.executemany(
-        "INSERT INTO #temp_csv (data_nasc, cidade, uf) VALUES (?, ?, ?)",
-        registros
-    )
-
-    # 3) SELECT set-based (SARGable na data; tipos idênticos nos joins)
-    rows = execute_with_retries(cursor, """
-        SELECT t.DDD, t.TELEFONE
-        FROM #temp_csv AS csv
-        JOIN [dbo].[CONTATOS]            AS c
-          ON c.NASC >= csv.data_nasc
-         AND c.NASC < DATEADD(DAY, 1, csv.data_nasc)
-        JOIN [dbo].[HISTORICO_ENDERECOS] AS e
-          ON e.CONTATOS_ID = c.CONTATOS_ID
-         AND e.CIDADE      = csv.cidade
-         AND e.UF          = csv.uf
-        JOIN [dbo].[HISTORICO_TELEFONES] AS t
-          ON t.CONTATOS_ID = c.CONTATOS_ID
-        WHERE t.TIPO_TELEFONE = 3;
-    """, ())
-
-    # 4) Formata saída
-    return [f"55{r.DDD}{r.TELEFONE}" for r in rows]
+    try:
+        # 1) Criação da temp table com retry
+        execute_with_retries(cursor, 
+            "IF OBJECT_ID('tempdb..#temp_csv') IS NOT NULL DROP TABLE #temp_csv", 
+            (), is_query=False
+        )
+        execute_with_retries(cursor, """
+            CREATE TABLE #temp_csv (
+                data_nasc DATE NOT NULL,
+                cidade VARCHAR(40) NOT NULL,
+                uf VARCHAR(2) NOT NULL
+            );
+        """, (), is_query=False)
+        
+        # 2) Inserção com retry
+        cursor.fast_executemany = True
+        executemany_with_retries(cursor,
+            "INSERT INTO #temp_csv (data_nasc, cidade, uf) VALUES (?, ?, ?)",
+            registros
+        )
+        
+        # 3) Consulta principal
+        rows = execute_with_retries(cursor, """
+            SELECT DISTINCT t.DDD, t.TELEFONE
+            FROM #temp_csv AS csv
+            JOIN [dbo].[CONTATOS] AS c ON c.NASC >= csv.data_nasc AND c.NASC < DATEADD(DAY, 1, csv.data_nasc)
+            JOIN [dbo].[HISTORICO_ENDERECOS] AS e ON e.CONTATOS_ID = c.CONTATOS_ID AND e.CIDADE = csv.cidade AND e.UF = csv.uf
+            JOIN [dbo].[HISTORICO_TELEFONES] AS t ON t.CONTATOS_ID = c.CONTATOS_ID
+            WHERE t.TIPO_TELEFONE = 3;
+        """, ())
+        
+        return [f"55{r.DDD}{r.TELEFONE}" for r in rows]
+    except Exception as e:
+        logging.error(f"Erro durante processamento em lote: {e}")
+        return []
+    finally:
+        # Limpeza da temp table
+        try:
+            execute_with_retries(cursor,
+                "IF OBJECT_ID('tempdb..#temp_csv') IS NOT NULL DROP TABLE #temp_csv",
+                (), is_query=False
+            )
+        except:
+            pass
