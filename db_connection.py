@@ -1,6 +1,7 @@
 import pyodbc
 from config import (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT, 
-                    ENCRYPT, TRUST_SERVER_CERTIFICATE, ODBC_DRIVER, SQL_LOGIN_TIMEOUT, SQL_AUTOCOMMIT)
+                    ENCRYPT, TRUST_SERVER_CERTIFICATE, ODBC_DRIVER, 
+                    SQL_LOGIN_TIMEOUT, SQL_AUTOCOMMIT, SQL_QUERY_TIMEOUT)
 
 def get_connection():
     """

@@ -33,9 +33,9 @@ def main():
     if conn is None:
         logging.error("Falha ao obter conexão; interrompendo.")
         sys.exit(1)
-
+    
+    conn.timeout = SQL_QUERY_TIMEOUT                   # Correção: Timeout é na conexão, não no cursor
     cursor = conn.cursor()                             # retorno: pyodbc.Cursor
-    cursor.timeout = SQL_QUERY_TIMEOUT                 # efeito: limite por SELECT (s)
     prepare_session(cursor)                            # aplica SETs uma única vez; retorno: None
 
     logging.info("Iniciando processamento...")
@@ -51,10 +51,15 @@ def main():
 
         for _, row in chunk.iterrows():
             try:
+                # Acesso por NOME de coluna (robusto e à prova de mudanças do pandas)
+                data_iso = row['data_nascimento']          # conteúdo: str (ex.: "1961-01-25")
+                cidade   = row['municipio']                # conteúdo: str
+                uf       = row['uf_sigla']                 # conteúdo: str ("RO", "SC"...)
+
                 registros.append((                          # retorno: None (append na lista)
-                    date.fromisoformat(row[0]),             # conteúdo: datetime.date (YYYY-MM-DD)
-                    row[1],                                 # conteúdo: str (cidade)
-                    row[3]                                  # conteúdo: str (uf)
+                    date.fromisoformat(data_iso),           # conteúdo: datetime.date (YYYY-MM-DD)
+                    cidade,                                 # conteúdo: str (cidade)
+                    uf                                      # conteúdo: str (uf)
                 ))
             except Exception as e:
                 logging.error(f"Erro ao preparar linha {row.to_dict()}: {e}")
@@ -89,8 +94,8 @@ def main():
                         if conn is None:
                             logging.error("Falha ao reconectar.")
                             raise
+                        conn.timeout = SQL_QUERY_TIMEOUT # Correção: Reaplica o timeout na nova conexão
                         cursor = conn.cursor()
-                        cursor.timeout = SQL_QUERY_TIMEOUT
                         prepare_session(cursor)
                         continue
                     # outro erro qualquer: propaga

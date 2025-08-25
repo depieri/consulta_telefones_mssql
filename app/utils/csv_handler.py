@@ -3,7 +3,10 @@ def ler_csv_em_lotes(caminho, tamanho_lote=None):
     from config import SQL_BATCH_SIZE                   # conteúdo: int vindo do .env (fallback 500)
     if tamanho_lote is None:                            # efeito: só usa config se ninguém passar tamanho_lote
         tamanho_lote = SQL_BATCH_SIZE                   # conteúdo: int efetivo do chunk size
-    return pd.read_csv(caminho, chunksize=tamanho_lote, dtype=str, na_filter=False, usecols=[0,1,3])  # retorno: iterador (TextFileReader) de DataFrames
+    return pd.read_csv(caminho,
+                        chunksize=tamanho_lote,
+                          dtype=str, na_filter=False,
+                            usecols=['data_nascimento', 'municipio', 'uf_sigla'])  # retorno: iterador (TextFileReader) de DataFrames
 
 def salvar_csv_resultados(lista_telefones, caminho_saida):
     from pathlib import Path                                   # importa utilitário de paths (retorno: módulo)

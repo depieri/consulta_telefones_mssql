@@ -21,5 +21,8 @@ MAX_RETRIES = int(os.environ.get("SQL_MAX_RETRIES", 5))                 # conte�
 BACKOFF_INITIAL = float(os.environ.get("SQL_BACKOFF_INITIAL", 0.2))     # conteúdo: float (segundos de atraso inicial)
 THROTTLE_BETWEEN_CHUNKS = float(os.getenv("SQL_THROTTLE_BETWEEN_CHUNKS", "0.2"))   # conteúdo: segundos
 THROTTLE_JITTER = float(os.getenv("SQL_THROTTLE_JITTER", "0.1"))         # conteúdo: segundos
+# Query Governor (limita plano por custo estimado)
+SQL_QUERY_GOVERNOR_LIMIT    = int(os.getenv("SQL_QUERY_GOVERNOR_LIMIT", "2000"))  # conteúdo: int
+SQL_QUERY_GOVERNOR_FALLBACK = int(os.getenv("SQL_QUERY_GOVERNOR_FALLBACK", "0"))  # conteúdo: int (0 = desativa)
 # Autocommit (true/false) - recomendado para CREATE/INSERT/SELECT com #temp_csv
 SQL_AUTOCOMMIT = os.getenv("SQL_AUTOCOMMIT", "true").strip().lower() in ("1","true","yes","y","on")

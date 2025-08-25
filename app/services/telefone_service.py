@@ -1,5 +1,5 @@
 from db_connection import get_connection
-from config import MAX_RETRIES, BACKOFF_INITIAL    # usa a fonte única do config.py
+from config import MAX_RETRIES, BACKOFF_INITIAL, SQL_QUERY_GOVERNOR_LIMIT    # usa a fonte única do config.py
 import pyodbc
 import time               # conteúdo: sleep do back-off
 import logging            # conteúdo: logs estruturados
@@ -26,7 +26,14 @@ def prepare_session(cursor):
     cursor.execute("SET NOCOUNT ON;")                    # reduz chatter TDS (menos overhead de 'N rows affected')
     cursor.execute("SET DEADLOCK_PRIORITY LOW;")         # em disputa, você vira vítima (melhor do que travar outros)
     cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED;")  # padrão; explícito ajuda auditoria
-    cursor.execute("SET QUERY_GOVERNOR_COST_LIMIT 20;")  # limite de custo estimado (~segundos)
+    try:
+        cursor.execute("SET QUERY_GOVERNOR_COST_LIMIT {SQL_QUERY_GOVERNOR_LIMIT};")  # limite de custo estimado (~segundos)
+        # retorno: None; aplica limite de custo estimado na sessão
+    except pyodbc.Error as e:
+        logging.warning(
+        f"Não foi possível aplicar QUERY_GOVERNOR_COST_LIMIT={SQL_QUERY_GOVERNOR_LIMIT}: {e}. "
+        "Prosseguindo com o padrão do servidor."
+        )
     cursor.execute("SET LOCK_TIMEOUT 5000;")             # até 5s aguardando locks
 
 def _is_transient_lock_error(err_msg: str) -> bool:
@@ -134,21 +141,21 @@ def consultar_telefones_em_lote_cursor(cursor, registros):
         execute_with_retries(cursor, """
             CREATE TABLE #temp_csv (
                 data_nasc DATE NOT NULL,
-                cidade VARCHAR(40) NOT NULL,
-                uf VARCHAR(2) NOT NULL
+                cidade VARCHAR(40) COLLATE DATABASE_DEFAULT NOT NULL,
+                uf VARCHAR(2) COLLATE DATABASE_DEFAULT NOT NULL,
             );""", (), is_query=False)
-
-        # 2) CRIA UM ÍNDICE NA TEMP TABLE PARA ACELERAR O JOIN
-        execute_with_retries(cursor, """
-            CREATE CLUSTERED INDEX IX_temp_csv ON #temp_csv (uf, cidade, data_nasc);
-        """, (), is_query=False)
         
-        # 3) Inserção com retry (usando fast_executemany)
+        # 2) Inserção com retry (usando fast_executemany)
         cursor.fast_executemany = True
         executemany_with_retries(cursor,
             "INSERT INTO #temp_csv (data_nasc, cidade, uf) VALUES (?, ?, ?)",
             registros
         )
+
+        # 3) CRIA UM ÍNDICE NA TEMP TABLE PARA ACELERAR O JOIN
+        execute_with_retries(cursor, """
+            CREATE CLUSTERED INDEX IX_temp_csv ON #temp_csv (uf, cidade, data_nasc);
+        """, (), is_query=False)
         
         # 4) Consulta principal com NOLOCK para evitar travamentos
         rows = execute_with_retries(cursor, """
